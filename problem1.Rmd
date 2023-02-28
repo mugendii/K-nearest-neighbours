@@ -1,0 +1,282 @@
+---
+title: "Applying k-Nearest Neighbors to predict the success of a marketing campaign k"
+output: html_notebook
+---
+#Applying k-Nearest Neighbors to predict the success of a marketing campaign 
+For this assignment, we will be using the bank marketing dataset from UCI. The data has 17 attributes and is related to marketing campaigns (phone calls) of a Portuguese banking institution. The classification goal is to predict if the client will subscribe a term deposit (variable y).
+Please download and unzip the dataset from here: https://archive.ics.uci.edu/ml/machine-learning-databases/00222/ . The dataset you will be working on is stored in bank-full.csv.
+Data Exploration
+Open the file bank-names.txt and carefully read the attribute information to understand what information is stored in each attribute, what values each attribute can take and so on.
+```{R}
+install.packages(c("ggplot2","rpart","carData","class","caTools","caret"))
+
+```
+
+```{r}
+bank_data <- read.csv("bank-full.csv",sep = ";",header = TRUE)
+
+head(bank_data)
+```
+
+
+```{r}
+str(bank_data)
+```
+
+```{r}
+summary(bank_data)
+```
+Get the frequency table of the target variable “y” to see how many observations you have in each category of y. Is y balanced? that is, do you have roughly same observations in y=yes and y=no?
+```{r}
+table(bank_data$y)
+```
+Explore the data in order to investigate the association between the target variable y and other variables in the dataset. Which of the other variables are associated with y? Use appropriate plots and statistic tests to answer this question.
+
+```{r}
+
+library(ggplot2)
+
+# Create a barplot of y based on each categorical variable in the dataset
+categorical_vars <- c("job", "marital", "education", "default", "housing", "loan", "contact", "month", "day", "poutcome")
+
+for(var in categorical_vars) {
+  p <- ggplot(data = bank_data, aes_string(x = var, fill = "y")) + 
+    geom_bar() +
+    scale_fill_manual(values = c("#00BFC4", "#F8766D")) +
+    theme_bw()
+  print(p)
+}
+
+```
+
+
+```{r}
+# Create boxplot of y based on each continuous variable in the dataset
+continuous_vars <- c("age", "duration", "campaign", "pdays", "previous", "poutcome")
+
+for(var in continuous_vars) {
+  p <- ggplot(data = bank_data, aes_string(x = "y", y = var, fill = "y")) + 
+    geom_boxplot() + 
+    scale_fill_manual(values = c("#00BFC4", "#F8766D")) +
+    theme_bw()
+  print(p)
+}
+
+```
+
+#Data Preparation
+Use the command colSums(is.na(<your dataframe>) to get the number of missing values in each column of your dataframe. Which columns have missing values? Note: some variables use “unknown” for missing values. Convert all “unknown” values to NA. You can do so by setting “na.strings” parameter to “unknown” when you read the file using read.csv.
+
+
+```{r}
+colSums(is.na(bank_data))
+```
+
+```{r}
+# Read the dataset again and convert "unknown" values to NA
+bank_data <- read.csv("bank-full.csv", sep=";", na.strings = c("unknown"))
+str(bank_data)
+# Get the number of missing values in each column
+colSums(is.na(bank_data))
+
+```
+```{r}
+install.packages("Hmisc")
+```
+
+
+```{r}
+
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+
+```
+```{r}
+library(Hmisc)
+
+
+# Replace missing values in numerical columns with column means
+bank_data[, sapply(bank_data, is.numeric)] <- impute(bank_data[, sapply(bank_data, is.numeric)], fun=mean)
+
+# Replace missing values in categorical columns with column modes
+bank_data[, sapply(bank_data, is.factor)] <- impute(bank_data[, sapply(bank_data, is.factor)], fun=Mode)
+
+# Check if there are still missing values
+colSums(is.na(bank_data))
+
+```
+```{r}
+# Replace missing values in numerical columns with the mean of the column
+num_cols <- c("age", "duration", "campaign", "pdays", "previous")
+for (col in num_cols) {
+  bank_data[[col]][is.na(bank_data[[col]])] <- mean(bank_data[[col]], na.rm = TRUE)
+}
+
+# Replace missing values in categorical columns with the mode/majority of the column
+cat_cols <- c("job", "marital", "education", "default", "housing", "loan", "poutcome","contact")
+for (col in cat_cols) {
+  bank_data[[col]][is.na(bank_data[[col]])] <- names(sort(-table(bank_data[[col]])))[1]
+}
+
+# Check the number of missing values in each column again
+colSums(is.na(bank_data))
+
+```
+Set the seed of the random number generator to a fixed integer, say 1, so that I can reproduce your work:
+Randomize the order of rows
+
+```{r}
+set.seed(123)
+
+# Randomize the order of the rows in the dataframe
+bank_data <- bank_data[sample(nrow(bank_data)), ]
+```
+
+One way to deal with categorical variables is to assign numeric indices to each level. However, this imposes an artificial ordering on an unordered categorical variable. For example, suppose that we have a categorical variable primary color with three levels: “red”,”blue”,”green”. If we convert “red” to 0 , “blue” to 1 and “green” to 2 then we are telling our model that red < blue< green which is not correct. A better way to encode an unordered categorical variable is to do one-hot-encoding. In one hot-encoding we create a dummy binary variable for each level of a categorical variable. Do one-hot-encoding of all your unordered categorical variables (except the target variable y). You can use the function one_hot from mltools package to one-hot encode all categorical variables in a dataset.
+
+
+```{r}
+# Load the data.table and mltools packages
+library(data.table)
+library(mltools)
+
+# Convert the dataframe to a data.table
+bank_data_dt <- as.data.table(bank_data)
+
+# Define the columns that contain unordered categorical variables
+unordered_cols <- c("job", "marital", "education","default", "housing", "loan", "contact", "month", "day_of_week", "poutcome", "y")
+ncol(unordered_cols)
+unordered_cols
+unordered_cols <- as.data.table(unordered_cols)
+# One-hot-encode the unordered categorical variables
+bank_data_onehot <- one_hot( unordered_cols )
+
+str(bank_data_onehot)
+bank_data_one_hot
+```
+Split the data into training and test sets. Use the first 36168 rows for training and the rest for testing.
+```{r}
+# Get the number of rows in the dataset
+num_rows <- nrow(bank_data_onehot)
+num_rows
+# Split the data into training and test sets
+train_indices <- 1:36168
+test_indices <- (36169:num_rows)
+
+train_data <- bank_data_onehot[train_indices, ]
+test_data <- bank_data_onehot[test_indices, ]
+ncol(train_data)
+ncol(test_data)
+train_labels <- as.factor(bank_data$y) 
+```
+
+Scale all numeric features using z-score normalization. Note: Don’t normalize your one-hot-encoded variables.
+```{r}
+library(data.table)
+
+# Define numeric columns
+numeric_cols <- names(train_data)[sapply(train_data, is.numeric)]
+
+# Scale numeric columns using z-score normalization
+train_data[, (numeric_cols) := lapply(.SD, scale), .SDcols = numeric_cols]
+test_data[, (numeric_cols) := lapply(.SD, scale), .SDcols = numeric_cols]
+
+
+# Replace the original numeric variables with the scaled variables in the training dataset
+#train_data[, numeric_cols] <- scaled_numeric_data
+
+```
+```{r}
+sum(is.na(train_labels))
+```
+
+```{r}
+nrow(train_data)
+nrow(train_labels)
+```
+
+Use 5-fold cross validation with KNN on the training set to predict the “y” variable and report the cross-validation accuracy.
+```{r}
+library(caret)
+
+# Define training control parameters
+ctrl <- trainControl(method = "cv", number = 5)
+
+# Fit KNN model with cross-validation
+fit <- train(x=train_data, y=train_labels , method = "knn", trControl = ctrl, preProcess = c("center", "scale"))
+
+# Print cross-validation results
+fit
+
+```
+
+```{r}
+# Define the tuning grid for KNN
+k_values <- c(1, 5, 10, 20, 50, 100, sqrt(nrow(bank_train)))
+param_grid <- data.frame(k = k_values)
+
+
+# Plot the cross-validation accuracy for different values of K
+plot(model$results$k, model$results$Accuracy, type = "l", xlab = "K", ylab = "Cross-Validation Accuracy")
+
+```
+Use “knn” function to train a knn model on the training set using the best value of K you found above and get the predicted values for the target variable y in the test set.
+
+
+
+```{r}
+library(class)
+summary(bank_test)
+# Train the KNN model using the best value of K
+k_best <- 15 # assuming you found the best value of K to be 40
+knn_model <- knn(bank_train[, -1], bank_test[, -1], bank_train$y, k = k_best)
+
+# Get predicted values for target variable y in the test set
+y_pred <- as.factor(knn_model)
+
+
+
+```
+
+Compare the predicted target (y) with the true target (y) in the test set using a cross table.
+```{r}
+# create cross table
+cross_tab <- table(bank_test$y, y_pred)
+
+# print cross table
+print(cross_tab)
+
+
+```
+
+```{R}
+eval_class <- function(tn, fn, fp, tp){
+  accuracy <- (tp + tn) / (tp + tn + fn + fp)
+  sensitivity <- tp / (tp + fn)
+  specificity <- tn / (fp + tn)
+  precision <- tp / (tp + fp)
+  npv <- tn / (tn + fn)
+  res <- c(accuracy, sensitivity, specificity, precision, npv)
+  names(res) <- c("Accuracy", "Sensitivity", "Specificity", "Precision", "Negative predictive value")
+  res
+}
+s4 <- eval_class(cross_tab[1,1], cross_tab[1,2], cross_tab[2,1], cross_tab[2,2])
+s4
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
